@@ -85,12 +85,11 @@ class FunLearnAdminApp:
         btn_frame = tk.Frame(self.tab_users)
         btn_frame.pack(fill=tk.X, padx=20, pady=10)
 
-        ttk.Button(btn_frame, text="➕ 新增账号 (INSERT)", command=lambda: self.mock_action("INSERT")).pack(side=tk.LEFT,
-                                                                                                           padx=10)
-        ttk.Button(btn_frame, text="✏️ 编辑选中行 (UPDATE)", command=lambda: self.mock_action("UPDATE")).pack(
-            side=tk.LEFT, padx=10)
-        ttk.Button(btn_frame, text="❌ 删除选中行 (DELETE)", command=lambda: self.mock_action("DELETE")).pack(
-            side=tk.LEFT, padx=10)
+        ttk.Button(btn_frame, text="➕ 新增账号 (INSERT)", command=self.open_add_user_window).pack(side=tk.LEFT, padx=10)
+
+        ttk.Button(btn_frame, text="✏️ 编辑选中行 (UPDATE)", command=self.open_edit_user_window).pack(side=tk.LEFT,
+                                                                                                      padx=10)
+        ttk.Button(btn_frame, text="❌ 删除选中行 (DELETE)", command=self.real_delete).pack(side=tk.LEFT, padx=10)
 
     # --- 交互逻辑方法 ---
     def real_search(self):
@@ -124,8 +123,146 @@ class FunLearnAdminApp:
             if 'conn' in locals() and conn.open:
                 conn.close()
 
-    def mock_action(self, action_name):
-        messagebox.showinfo("提示", f"已连接数据库！下一步我们将实现真实的 {action_name} 逻辑。")
+    def real_delete(self):
+        """核心业务逻辑：真实的 DELETE 操作"""
+        # 1. 获取用户在表格里选中的那一行
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("操作提示", "请先用鼠标点击选中表格里要删除的某一行！")
+            return
+
+        # 2. 提取出选中行的 user_id (学号)
+        item = self.tree.item(selected[0])
+        user_id = item['values'][0]
+        username = item['values'][1]
+
+        # 3. 弹出二次确认框，防止误删
+        if messagebox.askyesno("危险操作",
+                               f"你确定要将【{username} ({user_id})】从数据库中彻底删除吗？\n注意：与之相关的学习进度也会被级联删除！"):
+            try:
+                # 4. 连接数据库，执行 DELETE
+                conn = self.db.get_connection()
+                with conn.cursor() as cursor:
+                    sql = "DELETE FROM Users WHERE user_id = %s"
+                    cursor.execute(sql, (user_id,))
+
+                # ⚠️ 极其重要：对于增删改操作，必须手动 commit(提交)，否则数据库不会生效！
+                conn.commit()
+
+                # 5. 删除成功后，重新从数据库拉取最新数据刷新表格
+                self.load_data_from_db()
+                messagebox.showinfo("成功", f"学生 {username} 的数据已删除。")
+
+            except Exception as e:
+                messagebox.showerror("数据库错误", f"删除失败:\n{e}")
+            finally:
+                if 'conn' in locals() and conn.open:
+                    conn.close()
+
+    def open_add_user_window(self):
+        """弹出新增账号表单，并执行真实的 INSERT 逻辑"""
+        # 1. 创建一个独立的弹窗 (Toplevel)
+        add_win = tk.Toplevel(self.root)
+        add_win.title("➕ 新增学生账号")
+        add_win.geometry("350x300")
+        # 让弹窗拦截所有操作，直到关闭
+        add_win.grab_set()
+
+        # 2. 绘制表单输入框
+        tk.Label(add_win, text="学号 (例: U1003):").pack(pady=5)
+        entry_id = tk.Entry(add_win)
+        entry_id.pack()
+
+        tk.Label(add_win, text="学生昵称:").pack(pady=5)
+        entry_name = tk.Entry(add_win)
+        entry_name.pack()
+
+        tk.Label(add_win, text="登录密码:").pack(pady=5)
+        entry_pwd = tk.Entry(add_win, show="*")  # 密码用星号隐藏
+        entry_pwd.pack()
+
+        tk.Label(add_win, text="所在年级:").pack(pady=5)
+        entry_grade = ttk.Combobox(add_win, values=["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"])
+        entry_grade.pack()
+
+        # 3. 定义保存按钮的执行逻辑 (INSERT 操作)
+        def save_to_db():
+            uid = entry_id.get().strip()
+            uname = entry_name.get().strip()
+            upwd = entry_pwd.get().strip()
+            ugrade = entry_grade.get().strip()
+
+            if not uid or not uname or not upwd:
+                messagebox.showwarning("提示", "学号、昵称和密码为必填项！", parent=add_win)
+                return
+
+            try:
+                conn = self.db.get_connection()
+                with conn.cursor() as cursor:
+                    # 真实的 INSERT 语句，注意这里用 CURDATE() 自动获取今天作为注册日期
+                    sql = "INSERT INTO Users (user_id, username, password, grade, registration_date) VALUES (%s, %s, %s, %s, CURDATE())"
+                    cursor.execute(sql, (uid, uname, upwd, ugrade))
+
+                conn.commit()  # 提交入库
+                messagebox.showinfo("成功", "新账号已成功存入数据库！", parent=add_win)
+                add_win.destroy()  # 关闭弹窗
+                self.load_data_from_db()  # 重新拉取数据，刷新界面表格
+
+            except pymysql.err.IntegrityError:
+                messagebox.showerror("冲突", f"学号 {uid} 已经存在，请换一个！", parent=add_win)
+            except Exception as e:
+                messagebox.showerror("错误", f"保存失败: {e}", parent=add_win)
+            finally:
+                if 'conn' in locals() and conn.open:
+                    conn.close()
+
+        # 4. 放置保存按钮
+        ttk.Button(add_win, text="💾 确认保存至数据库", command=save_to_db).pack(pady=20)
+
+    def open_edit_user_window(self):
+        """弹出编辑窗口，执行 UPDATE 逻辑"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("操作提示", "请先在表格中点击选中一行要编辑的数据！")
+            return
+
+        # 提取当前选中的旧数据
+        item = self.tree.item(selected[0])
+        user_id = item['values'][0]
+        old_name = item['values'][1]
+        old_grade = item['values'][2]
+
+        edit_win = tk.Toplevel(self.root)
+        edit_win.title(f"✏️ 修改学生信息 (学号: {user_id})")
+        edit_win.geometry("300x200")
+        edit_win.grab_set()
+
+        tk.Label(edit_win, text="修改昵称:").pack(pady=5)
+        entry_name = tk.Entry(edit_win)
+        entry_name.insert(0, old_name)  # 填入旧名字
+        entry_name.pack()
+
+        tk.Label(edit_win, text="修改年级:").pack(pady=5)
+        entry_grade = ttk.Combobox(edit_win, values=["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"])
+        entry_grade.set(old_grade)  # 填入旧年级
+        entry_grade.pack()
+
+        def save_update():
+            new_name = entry_name.get().strip()
+            new_grade = entry_grade.get().strip()
+            try:
+                conn = self.db.get_connection()
+                with conn.cursor() as cursor:
+                    sql = "UPDATE Users SET username = %s, grade = %s WHERE user_id = %s"
+                    cursor.execute(sql, (new_name, new_grade, user_id))
+                conn.commit()
+                messagebox.showinfo("成功", "信息修改成功！", parent=edit_win)
+                edit_win.destroy()
+                self.load_data_from_db()  # 刷新表格
+            except Exception as e:
+                messagebox.showerror("错误", f"修改失败:\n{e}", parent=edit_win)
+
+        ttk.Button(edit_win, text="💾 保存修改 (UPDATE)", command=save_update).pack(pady=20)
 
 
 # ==========================================
